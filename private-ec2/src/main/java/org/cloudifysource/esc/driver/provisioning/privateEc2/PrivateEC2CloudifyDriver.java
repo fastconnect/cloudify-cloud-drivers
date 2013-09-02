@@ -37,6 +37,7 @@ import java.util.regex.Pattern;
 import org.apache.commons.codec.binary.Base64;
 import org.apache.commons.codec.binary.StringUtils;
 import org.apache.commons.io.FileUtils;
+import org.apache.commons.lang.CharEncoding;
 import org.cloudifysource.dsl.cloud.Cloud;
 import org.cloudifysource.dsl.cloud.CloudUser;
 import org.cloudifysource.dsl.cloud.ScriptLanguages;
@@ -99,7 +100,9 @@ public class PrivateEC2CloudifyDriver extends CloudDriverSupport implements
 
 	private static final int AMAZON_EXCEPTION_CODE_400 = 400;
 	private static final int MAX_SERVERS_LIMIT = 200;
-	private static final long WAIT_STATUS_SLEEP_TIME = 2000L;
+	private static final long WAIT_STATUS_SLEEP_TIME = 5000L;
+
+	private static final String CLOUDIFY_ENV_SCRIPT = "cloudify_env.sh";
 	private static final String PATTERN_PROPS_JSON = "\\s*\\\"[\\w-]*\\\"\\s*:\\s*([^{(\\[\"][\\w-]+)\\s*,?";
 	private static final String VOLUME_PREFIX = "cloudify-storage-";
 
@@ -742,21 +745,6 @@ public class PrivateEC2CloudifyDriver extends CloudDriverSupport implements
 	private Instance createEC2Instance(final PrivateEc2Template cfnTemplate, final ProvisioningContextImpl ctx,
 			final boolean management, final long duration, final TimeUnit unit) throws CloudProvisioningException,
 			TimeoutException {
-		String cloudFileS3 = null;
-		if (management) {
-			try {
-				CloudUser user = this.cloud.getUser();
-				ComputeTemplate template = this.getManagerComputeTemplate();
-				String cloudDirectory = (String) template.getCustom().get("cloudDirectory");
-				String s3BucketName = (String) template.getCustom().get("s3BucketName");
-				String locationId = (String) template.getCustom().get("s3LocationId");
-
-				AmazonS3Uploader amazonS3Uploader = new AmazonS3Uploader(user.getUser(), user.getApiKey(), locationId);
-				cloudFileS3 = amazonS3Uploader.zipAndUploadToS3(s3BucketName, cloudDirectory);
-			} catch (IOException e) {
-				throw new CloudProvisioningException(e);
-			}
-		}
 
 		InstanceProperties properties = cfnTemplate.getEC2Instance().getProperties();
 
@@ -774,43 +762,37 @@ public class PrivateEC2CloudifyDriver extends CloudDriverSupport implements
 
 		String userData = null;
 		if (properties.getUserData() != null) {
-			StringBuilder sb = new StringBuilder();
 
 			// Generate ENV script for the provisioned machine
-			String script = null;
-
+			String cloudFileS3 = null;
+			StringBuilder sb = new StringBuilder();
 			if (management) {
-				script = this.generateManagementCloudifyEnv(ctx);
-			} else {
-				script = this.generateCloudifyEnv(ctx);
-			}
+				cloudFileS3 = this.uploadCloudDir(ctx);
 
-			if (logger.isLoggable(Level.FINEST)) {
-				logger.finest("Generated Management Script:\n" + script);
-			}
-
-			sb.append("#!/bin/bash\n");
-			sb.append(script).append("\n");
-			if (management) {
 				ComputeTemplate template = this.getManagerComputeTemplate();
 				String cloudFileDir = (String) template.getRemoteDirectory();
+				// Remove '/' from the path if it's the last char.
 				if (cloudFileDir.length() > 1 && cloudFileDir.endsWith("/")) {
 					cloudFileDir = cloudFileDir.substring(0, cloudFileDir.length() - 1);
 				}
 				String endOfLine = " >> /tmp/cloud.txt\n";
+				sb.append("#!/bin/bash\n");
 				sb.append("export TMP_DIRECTORY=/tmp").append(endOfLine);
-				sb.append("export S3_ZIP_FILE='" + cloudFileS3 + "'").append(endOfLine);
-				sb.append("wget -q -O $TMP_DIRECTORY/cloudArchive.zip $S3_ZIP_FILE").append(endOfLine);
+				sb.append("export S3_ARCHIVE_FILE='" + cloudFileS3 + "'").append(endOfLine);
+				sb.append("wget -q -O $TMP_DIRECTORY/cloudArchive.tar.gz $S3_ARCHIVE_FILE").append(endOfLine);
 				sb.append("mkdir -p " + cloudFileDir).append(endOfLine);
-				sb.append("apt-get update").append(endOfLine);
-				sb.append("apt-get install unzip").append(endOfLine);
-				sb.append("unzip $TMP_DIRECTORY/cloudArchive.zip -d " + cloudFileDir).append(endOfLine);
-				sb.append("rm -f $TMP_DIRECTORY/cloudArchive.zip").append(endOfLine);
-				// TODO retrieve port dynamically for LUS_IP_ADDRESS
-				sb.append("export LUS_IP_ADDRESS=`curl http://instance-data/latest/meta-data/local-ipv4`:4174").append(
-						endOfLine);
+				sb.append("tar zxvf $TMP_DIRECTORY/cloudArchive.tar.gz -C " + cloudFileDir).append(endOfLine);
+				sb.append("rm -f $TMP_DIRECTORY/cloudArchive.tar.gz").append(endOfLine);
+				sb.append("echo ").append(cloudFileDir).append("/").append(CLOUDIFY_ENV_SCRIPT).append(endOfLine);
+				sb.append("chmod 755 ").append(cloudFileDir).append("/").append(CLOUDIFY_ENV_SCRIPT).append(endOfLine);
+				sb.append("source ").append(cloudFileDir).append("/").append(CLOUDIFY_ENV_SCRIPT).append(endOfLine);
+			} else {
+				String script = this.generateCloudifyEnv(ctx);
 
+				sb.append("#!/bin/bash\n");
+				sb.append(script);
 			}
+
 			sb.append(properties.getUserData().getValue());
 			userData = sb.toString();
 			logger.fine("Instanciate ec2 with user data:\n" + userData);
@@ -854,6 +836,45 @@ public class PrivateEC2CloudifyDriver extends CloudDriverSupport implements
 		ec2Instance = this.waitRunningInstance(ec2Instance, duration, unit);
 
 		return ec2Instance;
+	}
+
+	private String uploadCloudDir(final ProvisioningContextImpl ctx) throws CloudProvisioningException {
+		try {
+			CloudUser user = this.cloud.getUser();
+			ComputeTemplate template = this.getManagerComputeTemplate();
+			String cloudDirectory = (String) template.getCustom().get("cloudDirectory");
+			String s3BucketName = (String) template.getCustom().get("s3BucketName");
+			String locationId = (String) template.getCustom().get("s3LocationId");
+
+			// Generate env script
+			String script = this.generateManagementCloudifyEnv(ctx);
+			StringBuilder sb = new StringBuilder();
+			sb.append("#!/bin/bash\n");
+			sb.append(script);
+			// TODO retrieve port dynamically for LUS_IP_ADDRESS
+			sb.append("export LUS_IP_ADDRESS=`curl http://instance-data/latest/meta-data/local-ipv4`:4174");
+
+			// Create tmp dir
+			File createTempFile = File.createTempFile("cloudify_env", "");
+			createTempFile.delete();
+			// Create tmp file
+			File tmpEnvFile = new File(createTempFile, CLOUDIFY_ENV_SCRIPT);
+			tmpEnvFile.deleteOnExit();
+			// Write the script into the temp filedir
+			FileUtils.writeStringToFile(tmpEnvFile, sb.toString(), CharEncoding.UTF_8);
+
+			// Compress file
+			String[] sourcePaths = new String[] { cloudDirectory, tmpEnvFile.getAbsolutePath() };
+			File tarGzFile = TarGzUtils.createTarGz(sourcePaths, false);
+
+			// Upload to S3
+			AmazonS3Uploader amazonS3Uploader = new AmazonS3Uploader(
+					user.getUser(), user.getApiKey(), locationId);
+			String cloudFileS3 = amazonS3Uploader.uploadFile(s3BucketName, tarGzFile);
+			return cloudFileS3;
+		} catch (IOException e) {
+			throw new CloudProvisioningException(e);
+		}
 	}
 
 	private BlockDeviceMapping createBlockDeviceMapping(final String device, final AWSEC2Volume volumeConfig)

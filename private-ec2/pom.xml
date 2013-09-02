@@ -32,8 +32,18 @@
 			<groupId>com.amazonaws</groupId>
 			<artifactId>aws-java-sdk</artifactId>
 			<version>1.4.7</version>
-		</dependency> 
-
+		</dependency>
+		<dependency>
+			<groupId>org.apache.commons</groupId>
+			<artifactId>commons-compress</artifactId>
+			<version>1.5</version>
+		</dependency>
+		<dependency>
+			<groupId>commons-codec</groupId>
+			<artifactId>commons-codec</artifactId>
+			<version>1.4</version>
+		</dependency>
+		
 		<!-- CLOUDIFY -->
 		<dependency>
 			<groupId>org.cloudifysource</groupId>
@@ -147,6 +157,10 @@
 										<artifactItem>
 											<groupId>com.amazonaws</groupId>
 											<artifactId>aws-java-sdk</artifactId>
+										</artifactItem>
+										<artifactItem>
+											<groupId>org.apache.commons</groupId>
+											<artifactId>commons-compress</artifactId>
 										</artifactItem>
 									</artifactItems>
 									<outputDirectory>${project.build.directory}</outputDirectory>
