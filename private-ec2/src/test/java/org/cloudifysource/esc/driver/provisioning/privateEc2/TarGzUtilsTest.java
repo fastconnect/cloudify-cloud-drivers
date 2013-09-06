@@ -39,7 +39,7 @@ public class TarGzUtilsTest {
 		FileUtils.writeStringToFile(tmpFile, "this is a test");
 
 		File createTarGz = TarGzUtils.createTarGz(
-				new String[] { "C:/cloudify-deployment/gigaspaces-cloudify-2.6.1-ga-b5199-139/clouds/privateEc2",
+				new String[] { "./cloudify/clouds/privateEc2",
 						tmpFile.getAbsolutePath() }, false);
 
 		File destinationFolder = File.createTempFile("test", "");

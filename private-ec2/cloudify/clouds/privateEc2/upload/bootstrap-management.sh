@@ -51,7 +51,6 @@ SCRIPT=`readlink -f $0`
 SCRIPTPATH=`dirname $SCRIPT`
 echo script path is $SCRIPTPATH
 
-
 if [ -f ${SCRIPTPATH}/cloudify_env.sh ]; then
 	ENV_FILE_PATH=${SCRIPTPATH}/cloudify_env.sh
 else
@@ -66,12 +65,16 @@ fi
 
 source ${ENV_FILE_PATH}
 
+if [ "$BASEDIR" = "" ]; then
+	export BASEDIR=~
+fi
+
 if [ "$STORAGE_VOLUME_ATTACHED" = "true" ]; then
 	echo Formatting storage volume with fs type ${STORAGE_FORMAT_TYPE} and device name ${STORAGE_DEVICE_NAME} 
 	sudo mkfs -t $STORAGE_FORMAT_TYPE $STORAGE_DEVICE_NAME || error_exit $? "Failed formatting storage volume"
 	echo Mounting storage volume on path ${STORAGE_MOUNT_PATH}
-	mkdir -p ~/$STORAGE_MOUNT_PATH
-	sudo mount $STORAGE_DEVICE_NAME ~/$STORAGE_MOUNT_PATH || error_exit $? "Failed mounting storage volume"
+	mkdir -p $BASEDIR/$STORAGE_MOUNT_PATH
+	sudo mount $STORAGE_DEVICE_NAME $BASEDIR/$STORAGE_MOUNT_PATH || error_exit $? "Failed mounting storage volume"
 	USERNAME=`whoami`
 	sudo chown $USERNAME storage/ 
 fi
@@ -103,15 +106,16 @@ else
 	wget -q -O $WORKING_HOME_DIRECTORY/java.bin $GIGASPACES_AGENT_ENV_JAVA_URL || error_exit $? "Failed downloading Java installation from $GIGASPACES_AGENT_ENV_JAVA_URL"
 	chmod +x $WORKING_HOME_DIRECTORY/java.bin
 	echo -e "\n" > $WORKING_HOME_DIRECTORY/input.txt
-	rm -rf ~/java || error_exit $? "Failed removing old java installation directory"
-	mkdir ~/java
-	cd ~/java
+	rm -rf $BASEDIR/java || error_exit $? "Failed removing old java installation directory"
+	mkdir $BASEDIR/java
+	cd $BASEDIR/java
 	
 	echo Installing JDK
 	$WORKING_HOME_DIRECTORY/java.bin < $WORKING_HOME_DIRECTORY/input.txt > /dev/null
-	mv ~/java/*/* ~/java || error_exit $? "Failed moving JDK installation"
+	mv $BASEDIR/java/*/* $BASEDIR/java || error_exit $? "Failed moving JDK installation"
 	rm -f $WORKING_HOME_DIRECTORY/input.txt
-    export JAVA_HOME=~/java
+    export JAVA_HOME=$BASEDIR/java
+    echo JAVA_HOME=$JAVA_HOME
 fi  
 
 export EXT_JAVA_OPTIONS="-Dcom.gs.multicast.enabled=false"
@@ -127,32 +131,34 @@ if [ ! -z "$GIGASPACES_OVERRIDES_LINK" ]; then
 fi
 
 # Todo: Check this condition
-if [ ! -d "~/gigaspaces" -o $WORKING_HOME_DIRECTORY/gigaspaces.tar.gz -nt ~/gigaspaces ]; then
-	rm -rf ~/gigaspaces || error_exit $? "Failed removing old gigaspaces directory"
-	mkdir ~/gigaspaces || error_exit $? "Failed creating gigaspaces directory"
+if [ ! -d "$BASEDIR/gigaspaces" -o $WORKING_HOME_DIRECTORY/gigaspaces.tar.gz -nt $BASEDIR/gigaspaces ]; then
+	rm -rf $BASEDIR/gigaspaces || error_exit $? "Failed removing old gigaspaces directory"
+	mkdir $BASEDIR/gigaspaces || error_exit $? "Failed creating gigaspaces directory"
 	
 	# 2 is the error level threshold. 1 means only warnings
 	# this is needed for testing purposes on zip files created on the windows platform 
-	tar xfz $WORKING_HOME_DIRECTORY/gigaspaces.tar.gz -C ~/gigaspaces || error_exit_on_level $? "Failed extracting cloudify installation" 2 
+	tar xfz $WORKING_HOME_DIRECTORY/gigaspaces.tar.gz -C $BASEDIR/gigaspaces || error_exit_on_level $? "Failed extracting cloudify installation" 2 
+	echo GigaSpaces Directory: $BASEDIR/gigaspaces
 
 	# Todo: consider removing this line
-	chmod -R 777 ~/gigaspaces || error_exit $? "Failed changing permissions in cloudify installion"
-	mv ~/gigaspaces/*/* ~/gigaspaces || error_exit $? "Failed moving cloudify installation"
+	chmod -R 777 $BASEDIR/gigaspaces || error_exit $? "Failed changing permissions in cloudify installion"
+	mv $BASEDIR/gigaspaces/*/* $BASEDIR/gigaspaces || error_exit $? "Failed moving cloudify installation"
 	
 	if [ ! -z "$GIGASPACES_OVERRIDES_LINK" ]; then
 		echo Copying overrides into cloudify distribution
-		tar xfz $WORKING_HOME_DIRECTORY/gigaspaces_overrides.tar.gz -C ~/gigaspaces || error_exit_on_level $? "Failed extracting cloudify overrides" 2 		
+		tar xfz $WORKING_HOME_DIRECTORY/gigaspaces_overrides.tar.gz -C $BASEDIR/gigaspaces || error_exit_on_level $? "Failed extracting cloudify overrides" 2 		
 	fi
 fi
 
 # if an overrides directory exists, copy it into the cloudify distribution
 if [ -d $WORKING_HOME_DIRECTORY/cloudify-overrides ]; then
-	cp -rf $WORKING_HOME_DIRECTORY/cloudify-overrides/* ~/gigaspaces
+	echo override cloudify copy $WORKING_HOME_DIRECTORY/cloudify-overrides to $BASEDIR/gigaspaces
+	cp -rf $WORKING_HOME_DIRECTORY/cloudify-overrides/* $BASEDIR/gigaspaces
 fi
 
 # UPDATE SETENV SCRIPT...
 echo Updating environment script
-cd ~/gigaspaces/bin || error_exit $? "Failed changing directory to bin directory"
+cd $BASEDIR/gigaspaces/bin || error_exit $? "Failed changing directory to bin directory"
 
 sed -i "1i source  ${ENV_FILE_PATH}" setenv.sh || error_exit $? "Failed updating setenv.sh"
 sed -i "1i export NIC_ADDR=$MACHINE_IP_ADDRESS" setenv.sh || error_exit $? "Failed updating setenv.sh"
@@ -211,7 +217,8 @@ if [ ! -z "$GIGASPACES_AGENT_ENV_INIT_COMMAND" ]; then
 	$GIGASPACES_AGENT_ENV_INIT_COMMAND
 fi
 
-cd ~/gigaspaces/tools/cli || error_exit $? "Failed changing directory to cli directory"
+
+cd $BASEDIR/gigaspaces/tools/cli || error_exit $? "Failed changing directory to cli directory"
 
 START_COMMAND_ARGS="-timeout 30 --verbose -auto-shutdown"
 if [ "$GSA_MODE" = "agent" ]; then
