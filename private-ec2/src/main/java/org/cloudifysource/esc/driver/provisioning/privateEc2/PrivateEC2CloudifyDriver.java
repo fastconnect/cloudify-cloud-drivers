@@ -483,15 +483,7 @@ public class PrivateEC2CloudifyDriver extends CloudDriverSupport implements
 					case RUNNING:
 					case STOPPING:
 					case SHUTTING_DOWN:
-						try {
-
-							if (logger.isLoggable(Level.FINEST)) {
-								logger.finest("sleeping...");
-							}
-							Thread.sleep(WAIT_STATUS_SLEEP_TIME);
-						} catch (InterruptedException e) {
-							Thread.currentThread().interrupt();
-						}
+						this.sleep();
 						break;
 					case STOPPED:
 					case TERMINATED:
@@ -510,6 +502,18 @@ public class PrivateEC2CloudifyDriver extends CloudDriverSupport implements
 		}
 
 		throw new TimeoutException("Stopping instace timed out (id=" + instanceId + ")");
+	}
+
+	private void sleep() {
+		try {
+
+			if (logger.isLoggable(Level.FINEST)) {
+				logger.finest("sleeping...");
+			}
+			Thread.sleep(WAIT_STATUS_SLEEP_TIME);
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+		}
 	}
 
 	private MachineDetails createServer(final PrivateEc2Template cfnTemplate, final String machineName,
@@ -632,12 +636,14 @@ public class PrivateEC2CloudifyDriver extends CloudDriverSupport implements
 	}
 
 	private Instance waitRunningInstance(final Instance ec2instance, final long duration, final TimeUnit unit)
-			throws CloudProvisioningException,
-			TimeoutException {
-
+			throws CloudProvisioningException, TimeoutException {
 		long endTime = System.currentTimeMillis() + unit.toMillis(duration);
 
 		while (System.currentTimeMillis() < endTime) {
+			// Sleep before requesting the instance description
+			// because we can get a AWS Error Code: InvalidInstanceID.NotFound if the request is too early.
+			this.sleep();
+
 			DescribeInstancesRequest describeRequest = new DescribeInstancesRequest();
 			describeRequest.setInstanceIds(Arrays.asList(ec2instance.getInstanceId()));
 			DescribeInstancesResult describeInstances = this.ec2.describeInstances(describeRequest);
@@ -650,14 +656,6 @@ public class PrivateEC2CloudifyDriver extends CloudDriverSupport implements
 					}
 					switch (state) {
 					case PENDING:
-						try {
-							if (logger.isLoggable(Level.FINEST)) {
-								logger.finest("sleeping...");
-							}
-							Thread.sleep(WAIT_STATUS_SLEEP_TIME);
-						} catch (InterruptedException e) {
-							Thread.currentThread().interrupt();
-						}
 						break;
 					case RUNNING:
 						logger.fine("running okay...");
@@ -670,7 +668,6 @@ public class PrivateEC2CloudifyDriver extends CloudDriverSupport implements
 						throw new CloudProvisioningException("Failed to allocate server - Cloud reported node in "
 								+ state.getName() + " state. Node details: "
 								+ ec2instance);
-
 					}
 
 				}
@@ -762,36 +759,29 @@ public class PrivateEC2CloudifyDriver extends CloudDriverSupport implements
 
 		String userData = null;
 		if (properties.getUserData() != null) {
-
 			// Generate ENV script for the provisioned machine
 			String cloudFileS3 = null;
 			StringBuilder sb = new StringBuilder();
-			if (management) {
-				cloudFileS3 = this.uploadCloudDir(ctx);
+			String script = management ? this.generateManagementCloudifyEnv(ctx) : this.generateCloudifyEnv(ctx);
+			cloudFileS3 = this.uploadCloudDir(ctx, script, management);
 
-				ComputeTemplate template = this.getManagerComputeTemplate();
-				String cloudFileDir = (String) template.getRemoteDirectory();
-				// Remove '/' from the path if it's the last char.
-				if (cloudFileDir.length() > 1 && cloudFileDir.endsWith("/")) {
-					cloudFileDir = cloudFileDir.substring(0, cloudFileDir.length() - 1);
-				}
-				String endOfLine = " >> /tmp/cloud.txt\n";
-				sb.append("#!/bin/bash\n");
-				sb.append("export TMP_DIRECTORY=/tmp").append(endOfLine);
-				sb.append("export S3_ARCHIVE_FILE='" + cloudFileS3 + "'").append(endOfLine);
-				sb.append("wget -q -O $TMP_DIRECTORY/cloudArchive.tar.gz $S3_ARCHIVE_FILE").append(endOfLine);
-				sb.append("mkdir -p " + cloudFileDir).append(endOfLine);
-				sb.append("tar zxvf $TMP_DIRECTORY/cloudArchive.tar.gz -C " + cloudFileDir).append(endOfLine);
-				sb.append("rm -f $TMP_DIRECTORY/cloudArchive.tar.gz").append(endOfLine);
-				sb.append("echo ").append(cloudFileDir).append("/").append(CLOUDIFY_ENV_SCRIPT).append(endOfLine);
-				sb.append("chmod 755 ").append(cloudFileDir).append("/").append(CLOUDIFY_ENV_SCRIPT).append(endOfLine);
-				sb.append("source ").append(cloudFileDir).append("/").append(CLOUDIFY_ENV_SCRIPT).append(endOfLine);
-			} else {
-				String script = this.generateCloudifyEnv(ctx);
-
-				sb.append("#!/bin/bash\n");
-				sb.append(script);
+			ComputeTemplate template = this.getManagerComputeTemplate();
+			String cloudFileDir = (String) template.getRemoteDirectory();
+			// Remove '/' from the path if it's the last char.
+			if (cloudFileDir.length() > 1 && cloudFileDir.endsWith("/")) {
+				cloudFileDir = cloudFileDir.substring(0, cloudFileDir.length() - 1);
 			}
+			String endOfLine = " >> /tmp/cloud.txt\n";
+			sb.append("#!/bin/bash\n");
+			sb.append("export TMP_DIRECTORY=/tmp").append(endOfLine);
+			sb.append("export S3_ARCHIVE_FILE='" + cloudFileS3 + "'").append(endOfLine);
+			sb.append("wget -q -O $TMP_DIRECTORY/cloudArchive.tar.gz $S3_ARCHIVE_FILE").append(endOfLine);
+			sb.append("mkdir -p " + cloudFileDir).append(endOfLine);
+			sb.append("tar zxvf $TMP_DIRECTORY/cloudArchive.tar.gz -C " + cloudFileDir).append(endOfLine);
+			sb.append("rm -f $TMP_DIRECTORY/cloudArchive.tar.gz").append(endOfLine);
+			sb.append("echo ").append(cloudFileDir).append("/").append(CLOUDIFY_ENV_SCRIPT).append(endOfLine);
+			sb.append("chmod 755 ").append(cloudFileDir).append("/").append(CLOUDIFY_ENV_SCRIPT).append(endOfLine);
+			sb.append("source ").append(cloudFileDir).append("/").append(CLOUDIFY_ENV_SCRIPT).append(endOfLine);
 
 			sb.append(properties.getUserData().getValue());
 			userData = sb.toString();
@@ -838,21 +828,24 @@ public class PrivateEC2CloudifyDriver extends CloudDriverSupport implements
 		return ec2Instance;
 	}
 
-	private String uploadCloudDir(final ProvisioningContextImpl ctx) throws CloudProvisioningException {
+	private String uploadCloudDir(final ProvisioningContextImpl ctx, final String script, final boolean isManagement)
+			throws CloudProvisioningException {
 		try {
 			CloudUser user = this.cloud.getUser();
 			ComputeTemplate template = this.getManagerComputeTemplate();
-			String cloudDirectory = (String) template.getCustom().get("cloudDirectory");
+			String cloudDirectory = isManagement ? (String) template.getCustom().get("cloudDirectory")
+					: template.getAbsoluteUploadDir();
 			String s3BucketName = (String) template.getCustom().get("s3BucketName");
 			String locationId = (String) template.getCustom().get("s3LocationId");
 
 			// Generate env script
-			String script = this.generateManagementCloudifyEnv(ctx);
 			StringBuilder sb = new StringBuilder();
 			sb.append("#!/bin/bash\n");
 			sb.append(script);
-			// TODO retrieve port dynamically for LUS_IP_ADDRESS
-			sb.append("export LUS_IP_ADDRESS=`curl http://instance-data/latest/meta-data/local-ipv4`:4174");
+			if (isManagement) {
+				// TODO retrieve port dynamically for LUS_IP_ADDRESS
+				sb.append("export LUS_IP_ADDRESS=`curl http://instance-data/latest/meta-data/local-ipv4`:4174");
+			}
 
 			// Create tmp dir
 			File createTempFile = File.createTempFile("cloudify_env", "");
@@ -864,6 +857,7 @@ public class PrivateEC2CloudifyDriver extends CloudDriverSupport implements
 			FileUtils.writeStringToFile(tmpEnvFile, sb.toString(), CharEncoding.UTF_8);
 
 			// Compress file
+			logger.fine("Archive folders to upload: " + cloudDirectory + " and " + tmpEnvFile.getAbsolutePath());
 			String[] sourcePaths = new String[] { cloudDirectory, tmpEnvFile.getAbsolutePath() };
 			File tarGzFile = TarGzUtils.createTarGz(sourcePaths, false);
 

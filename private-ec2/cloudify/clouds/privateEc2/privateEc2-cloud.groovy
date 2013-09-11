@@ -85,6 +85,7 @@ cloud {
                 locationId locationId // For template validation
                 machineMemoryMB 2048   // must be bigger than reservedMemoryCapacityPerMachineInMB+100                
                 localDirectory "upload"
+				remoteDirectory "/home/ubuntu/gs-files"
             },
             CFN_MANAGER_TEMPLATE : computeTemplate{
                 imageId ""             // For template validation, defined in CFN templates
@@ -92,7 +93,7 @@ cloud {
                 locationId locationId  // For template validation
                 machineMemoryMB 2048   // must be bigger than reservedMemoryCapacityPerMachineInMB+100                
                 localDirectory "upload"
-				remoteDirectory "/home/ubuntu/gs-files"     // do not change, it is used to define $CLOUD_FILE
+				remoteDirectory "/home/ubuntu/gs-files"
 				
 				custom ([
 					"cfnManagerTemplate":"C:/cloudify-deployment/gigaspaces-cloudify-2.6.1-ga-b5199-139/clouds/privateEc2/privateEc2-cfn.template",
