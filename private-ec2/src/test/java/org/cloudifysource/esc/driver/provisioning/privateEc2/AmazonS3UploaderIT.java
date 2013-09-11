@@ -20,6 +20,8 @@ import java.util.Properties;
 import org.junit.Before;
 import org.junit.Test;
 
+import com.amazonaws.services.s3.model.S3Object;
+
 public class AmazonS3UploaderIT {
 
 	private AmazonS3Uploader s3Uploader;
@@ -35,7 +37,8 @@ public class AmazonS3UploaderIT {
 
 	@Test
 	public void testUploadFile() throws Exception {
-		String uploadFile = this.s3Uploader.uploadFile("cloudify-eu/test2", new File("./privateEc2.zip"));
+		S3Object s3 = this.s3Uploader.uploadFile("cloudify-eu/test2", new File("./privateEc2.zip"));
+		String uploadFile = this.s3Uploader.generatePresignedURL(s3);
 		System.out.println(uploadFile);
 	}
 
